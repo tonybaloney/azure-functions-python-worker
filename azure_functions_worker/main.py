@@ -27,6 +27,8 @@ def parse_args():
                              'syslog, or a file path')
     parser.add_argument('--grpcMaxMessageLength', type=int,
                         dest='grpc_max_msg_len')
+    parser.add_argument('--asGrpcServer', type=bool,
+                        dest='as_grpc_server', default=False)
     return parser.parse_args()
 
 
@@ -48,18 +50,26 @@ def main():
 
     try:
         return aio_compat.run(start_async(
-            args.host, args.port, args.worker_id, args.request_id))
+            args.host, args.port, args.worker_id,
+            args.request_id, args.as_grpc_server))
     except Exception:
         error_logger.exception('unhandled error in functions worker')
         raise
 
 
-async def start_async(host, port, worker_id, request_id):
+async def start_async(host, port, worker_id, request_id, as_grpc_server):
     from . import dispatcher
 
-    disp = await dispatcher.Dispatcher.connect(host=host, port=port,
-                                               worker_id=worker_id,
-                                               request_id=request_id,
-                                               connect_timeout=5.0)
+    if as_grpc_server:
+        disp = await dispatcher.Dispatcher.start(host=host, port=port,
+                                                 worker_id=worker_id,
+                                                 request_id=request_id,
+                                                 connect_timeout=5.0)
+        await disp.dispatch_forever()
+    else:
+        disp = await dispatcher.Dispatcher.connect(host=host, port=port,
+                                                   worker_id=worker_id,
+                                                   request_id=request_id,
+                                                   connect_timeout=5.0)
 
-    await disp.dispatch_forever()
+        await disp.dispatch_forever()
