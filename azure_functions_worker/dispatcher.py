@@ -6,6 +6,7 @@ Implements loading and execution of Python workers.
 """
 
 import asyncio
+from asyncio import coroutines
 from asyncio.events import AbstractEventLoop
 import concurrent.futures
 import logging
@@ -108,38 +109,6 @@ class Dispatcher(metaclass=DispatcherMeta):
         disp._grpc_thread.start()
         await disp._grpc_connected_fut
         logger.info('Successfully opened gRPC channel to %s:%s ', host, port)
-        return disp
-
-    @classmethod
-    async def start(cls, host: str, port: int, worker_id: str,
-                    request_id: str, connect_timeout: float):
-        class GrpcServicer(protos.FunctionRpcServicer):
-            _STOP = object()
-
-            def __init__(self, dispatcher, loop):
-                self._dispatcher = dispatcher
-                self._loop: AbstractEventLoop = loop
-
-            def EventStream(self, client_response_iterator, context):
-                client_response = next(client_response_iterator)
-                content_type = client_response.WhichOneof('content')
-                request_handler = getattr(self._dispatcher,
-                                          f'_handle__{content_type}',
-                                          None)
-                if request_handler is None:
-                    logger.error(f'unknown StreamingMessage content type '
-                                 f'{content_type}')
-
-                self._loop.run_until_complete(request_handler(context))
-                return
-
-        loop = asyncio.events.get_event_loop()
-        disp = cls(loop, host, port, worker_id, request_id, connect_timeout)
-        grpc_server = grpc.server(disp._grpc_thread)
-        grpc_servicer = GrpcServicer(disp, loop)
-        protos.add_FunctionRpcServicer_to_server(grpc_servicer, grpc_server)
-        grpc_server.add_insecure_port(f'[::]:{port}')
-        grpc_server.start()
         return disp
 
     async def dispatch_forever(self):
@@ -297,6 +266,9 @@ class Dispatcher(metaclass=DispatcherMeta):
 
         # Can detech worker packages
         DependencyManager.use_customer_dependencies()
+
+        logger.info('Finished WorkerInitRequest, request ID %s',
+                    self.request_id)
 
         return protos.StreamingMessage(
             request_id=self.request_id,
@@ -588,8 +560,7 @@ class Dispatcher(metaclass=DispatcherMeta):
             options.append(('grpc.max_send_message_length',
                             self._grpc_max_msg_len))
 
-        channel = grpc.insecure_channel(
-            f'{self._host}:{self._port}', options)
+        channel = grpc.insecure_channel(f'{self._host}:{self._port}', options)
 
         try:
             grpc.channel_ready_future(channel).result(

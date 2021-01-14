@@ -4,6 +4,7 @@
 
 
 import argparse
+import asyncio
 
 
 def parse_args():
@@ -59,13 +60,15 @@ def main():
 
 async def start_async(host, port, worker_id, request_id, as_grpc_server):
     from . import dispatcher
+    from .testutils import create_server
 
     if as_grpc_server:
-        disp = await dispatcher.Dispatcher.start(host=host, port=port,
-                                                 worker_id=worker_id,
-                                                 request_id=request_id,
-                                                 connect_timeout=5.0)
-        await disp.dispatch_forever()
+        loop = asyncio.get_event_loop()
+        dis = dispatcher.Dispatcher(loop, '127.0.0.1', port, 'worker_id',
+                                    'request_id', 60.0)
+        server = create_server(port, loop, dis)
+        server.start()
+        await loop.create_future()
     else:
         disp = await dispatcher.Dispatcher.connect(host=host, port=port,
                                                    worker_id=worker_id,

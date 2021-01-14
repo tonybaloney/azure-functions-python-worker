@@ -563,6 +563,65 @@ class _WebHostProxy:
         self._proc.wait()
 
 
+class GrpcServicer(protos.FunctionRpcServicer):
+    def __init__(self, loop, dis):
+        self._loop: asyncio.AbstractEventLoop = loop
+        self._dis: dispatcher.Dispatcher = dis
+        self._resp_queue: queue.Queue = queue.Queue()
+
+    def _gen(self):
+        while True:
+            msg = self._resp_queue.get()
+            yield msg
+
+    def EventStream(self, request_stream, context):
+        request = next(request_stream)
+        print(f"Activate EventStream 1 {request}")
+        content_type = request.WhichOneof('content')
+        print(f"Activate EventStream 2 {content_type}")
+        request_handler = getattr(self._dis,
+                                  f'_handle__{content_type}',
+                                  None)
+        print(f"Activate EventStream 3 {request_handler}")
+        fut = asyncio.run_coroutine_threadsafe(
+            request_handler(request),
+            self._loop
+        )
+        self._resp_queue.put_nowait(fut.result())
+        print(f"Activate EventStream 4 {fut.result()}")
+        channel = grpc.insecure_channel('127.0.0.1:8984')
+        stub = protos.FunctionRpcStub(channel)
+        return stub.EventStream(self._gen())
+
+    def EventSingle(self, request, context):
+        print(f"Activate EventSingle 1 {request}")
+        content_type = request.WhichOneof('content')
+        print(f"Activate EventSingle 2 {content_type}")
+        request_handler = getattr(self._dis,
+                                  f'_handle__{content_type}',
+                                  None)
+        print(f"Activate EventSingle 3 {request_handler}")
+        fut = asyncio.run_coroutine_threadsafe(
+            request_handler(request),
+            self._loop
+        )
+        print(f"Activate EventSingle 4 {fut.result()}")
+        return fut.result()
+
+
+def create_server(port: int, loop, dis):
+    grpc_thread = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    servicer = GrpcServicer(loop, dis)
+    server = grpc.server(grpc_thread)
+
+    protos.add_FunctionRpcServicer_to_server(servicer, server)
+
+    print(f'Starting server. Listing on port {port}')
+    server.add_insecure_port(f'0.0.0.0:{port}')
+    return server
+
+
 def _find_open_port():
     with socket.socket() as s:
         s.bind((LOCALHOST, 0))
