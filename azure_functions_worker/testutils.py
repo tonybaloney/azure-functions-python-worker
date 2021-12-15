@@ -71,6 +71,10 @@ LOCALHOST = "127.0.0.1"
 HOST_JSON_TEMPLATE = """\
 {
     "version": "2.0",
+    "extensionBundle": {
+        "id": "Microsoft.Azure.Functions.ExtensionBundle",
+        "version": "[2.*, 3.3.0)"
+    },
     "logging": {
         "logLevel": {
            "default": "Trace"

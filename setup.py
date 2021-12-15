@@ -34,27 +34,27 @@ AZURE_EXTENSIONS = """\
   <ItemGroup>
     <PackageReference
         Include="Microsoft.NET.Sdk.Functions"
-        Version="3.0.3"
+        Version="3.0.13"
     />
     <PackageReference
         Include="Microsoft.Azure.WebJobs.Extensions.CosmosDB"
-        Version="3.0.5"
-    />
-    <PackageReference
-        Include="Microsoft.Azure.WebJobs.Extensions.EventHubs"
-        Version="3.0.6"
-    />
-    <PackageReference
-        Include="Microsoft.Azure.WebJobs.Extensions.EventGrid"
-        Version="2.1.0"
-    />
-    <PackageReference
-        Include="Microsoft.Azure.WebJobs.Extensions.Storage"
         Version="3.0.10"
     />
     <PackageReference
+        Include="Microsoft.Azure.WebJobs.Extensions.EventHubs"
+        Version="4.3.0"
+    />
+    <PackageReference
+        Include="Microsoft.Azure.WebJobs.Extensions.EventGrid"
+        Version="3.0.0"
+    />
+    <PackageReference
+        Include="Microsoft.Azure.WebJobs.Extensions.Storage"
+        Version="4.0.5"
+    />
+    <PackageReference
         Include="Microsoft.Azure.WebJobs.ServiceBus"
-        Version="3.0.0-beta8"
+        Version="5.0.0"
     />
   </ItemGroup>
 </Project>
@@ -388,8 +388,9 @@ setup(
               'azure_functions_worker.utils',
               'azure_functions_worker._thirdparty'],
     install_requires=[
-        'grpcio~=1.33.2',
-        'grpcio-tools~=1.33.2',
+        'grpcio~=1.41.1',
+        'grpcio-tools~=1.41.1',
+        'protobuf~=3.19.1'
     ],
     extras_require={
         'dev': [
