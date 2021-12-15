@@ -7,6 +7,7 @@ import subprocess
 import sys
 import json
 import tempfile
+import typing
 import urllib.request
 import zipfile
 import re
@@ -20,7 +21,7 @@ from azure_functions_worker import __version__
 
 # The GitHub repository of the Azure Functions Host
 WEBHOST_GITHUB_API = "https://api.github.com/repos/Azure/azure-functions-host"
-WEBHOST_TAG_PREFIX = "v3."
+WEBHOST_TAG_PREFIX = "v4."
 
 # Extensions necessary for non-core bindings.
 AZURE_EXTENSIONS = """\
@@ -53,7 +54,7 @@ AZURE_EXTENSIONS = """\
         Version="4.0.5"
     />
     <PackageReference
-        Include="Microsoft.Azure.WebJobs.ServiceBus"
+        Include="Microsoft.Azure.WebJobs.Extensions.ServiceBus"
         Version="5.0.0"
     />
   </ItemGroup>
@@ -350,6 +351,28 @@ class webhost(distutils.cmd.Command):
         self._compile_webhost(self.webhost_dir)
 
 
+class clean(distutils.cmd.Command):
+    description = 'Download and setup Azure Functions Web Host.'
+    user_options = [
+        ('webhost-version', None,
+         'A Functions Host version to be downloaded (e.g. 3.0.15278).'),
+        ('webhost-dir', None,
+         'A path to the directory where Azure Web Host will be installed.'),
+    ]
+
+    def initialize_options(self) -> None:
+        self.build_dir: typing.Optional[pathlib.Path] = None
+
+    def finalize_options(self) -> None:
+        if self.build_dir is None:
+            self.build_dir = \
+                pathlib.Path(__file__).parent / 'build'
+
+    def run(self) -> None:
+        if self.build_dir:
+            shutil.rmtree(self.build_dir)
+
+
 with open("README.md") as readme:
     long_description = readme.read()
 
@@ -417,7 +440,8 @@ setup(
         'develop': develop,
         'build': build,
         'webhost': webhost,
-        'extension': extension
+        'extension': extension,
+        'clean': clean
     },
     test_suite='tests'
 )
