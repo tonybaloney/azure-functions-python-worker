@@ -4,6 +4,7 @@
 from types import ModuleType
 from typing import Any, Callable, List, Optional
 import logging
+import time
 import functools
 from .utils.common import (
     is_python_version,
@@ -144,7 +145,12 @@ class ExtensionManager:
         """
         cls._invocation_extension(ctx, APP_EXT_PRE_INVOCATION, args)
         cls._invocation_extension(ctx, FUNC_EXT_PRE_INVOCATION, args)
-        result = await function(**args)
+        start_time = time.time()
+        try:
+            result = await function(**args)
+        finally:
+            log = f"$$$ InvocationID: {ctx.invocation_id}, AppCodeTime_ms_worker: {1000. * (time.time() - start_time)}"
+            print(log)
         cls._invocation_extension(ctx, FUNC_EXT_POST_INVOCATION, args, result)
         cls._invocation_extension(ctx, APP_EXT_POST_INVOCATION, args, result)
         return result
@@ -212,7 +218,12 @@ class ExtensionManager:
         """
         cls._invocation_extension(ctx, APP_EXT_PRE_INVOCATION, args)
         cls._invocation_extension(ctx, FUNC_EXT_PRE_INVOCATION, args)
-        result = function(**args)
+        start_time = time.time()
+        try:
+            result = function(**args)
+        finally:
+            log = f"$$$ InvocationID: {ctx.invocation_id}, AppCodeTime_ms_worker: {1000. * (time.time() - start_time)}"
+            print(log)
         cls._invocation_extension(ctx, FUNC_EXT_POST_INVOCATION, args, result)
         cls._invocation_extension(ctx, APP_EXT_POST_INVOCATION, args, result)
         return result

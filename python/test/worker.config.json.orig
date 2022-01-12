@@ -2,7 +2,7 @@
     "description":{
         "language":"python",
         "extensions":[".py"],
-        "defaultExecutablePath":"/home/gochaudh/anaconda3/envs/azfunc_benchmarking/bin/python",
+        "defaultExecutablePath":"python",
         "defaultWorkerPath":"worker.py"
     }
 }

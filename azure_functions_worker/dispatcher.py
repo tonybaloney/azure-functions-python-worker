@@ -11,6 +11,8 @@ import logging
 import os
 import queue
 import sys
+import tempfile
+import time
 import threading
 from asyncio import BaseEventLoop
 from logging import LogRecord
@@ -107,12 +109,18 @@ class Dispatcher(metaclass=DispatcherMeta):
     @classmethod
     async def connect(cls, host: str, port: int, worker_id: str,
                       request_id: str, connect_timeout: float):
-        loop = asyncio.events.get_event_loop()
-        disp = cls(loop, host, port, worker_id, request_id, connect_timeout)
-        disp._grpc_thread.start()
-        await disp._grpc_connected_fut
-        logger.info('Successfully opened gRPC channel to %s:%s ', host, port)
-        return disp
+        start_time = time.time()
+
+        try:
+            loop = asyncio.events.get_event_loop()
+            disp = cls(loop, host, port, worker_id, request_id, connect_timeout)
+            disp._grpc_thread.start()
+            await disp._grpc_connected_fut
+            logger.info('Successfully opened gRPC channel to %s:%s ', host, port)
+            return disp
+        finally:
+            log = f'$$$ ConnectGRPC_ms_worker: {1000. * (time.time() - start_time)}'
+            print(log)
 
     async def dispatch_forever(self):
         if DispatcherMeta.__current_dispatcher__ is not None:
@@ -298,158 +306,200 @@ class Dispatcher(metaclass=DispatcherMeta):
             worker_status_response=protos.WorkerStatusResponse())
 
     async def _handle__function_load_request(self, req):
-        func_request = req.function_load_request
-        function_id = func_request.function_id
-        function_name = func_request.metadata.name
+        start_time = time.time()
 
-        logger.info(f'Received FunctionLoadRequest, '
-                    f'request ID: {self.request_id}, '
-                    f'function ID: {function_id}'
-                    f'function Name: {function_name}')
         try:
-            func = loader.load_function(
-                func_request.metadata.name,
-                func_request.metadata.directory,
-                func_request.metadata.script_file,
-                func_request.metadata.entry_point)
+            func_request = req.function_load_request
+            function_id = func_request.function_id
+            function_name = func_request.metadata.name
 
-            self._functions.add_function(
-                function_id, func, func_request.metadata)
-
-            ExtensionManager.function_load_extension(
-                function_name,
-                func_request.metadata.directory
-            )
-
-            logger.info('Successfully processed FunctionLoadRequest, '
+            logger.info(f'Received FunctionLoadRequest, '
                         f'request ID: {self.request_id}, '
-                        f'function ID: {function_id},'
+                        f'function ID: {function_id}'
                         f'function Name: {function_name}')
+            try:
+                func = loader.load_function(
+                    func_request.metadata.name,
+                    func_request.metadata.directory,
+                    func_request.metadata.script_file,
+                    func_request.metadata.entry_point)
 
-            return protos.StreamingMessage(
-                request_id=self.request_id,
-                function_load_response=protos.FunctionLoadResponse(
-                    function_id=function_id,
-                    result=protos.StatusResult(
-                        status=protos.StatusResult.Success)))
+                self._functions.add_function(
+                    function_id, func, func_request.metadata)
 
-        except Exception as ex:
-            return protos.StreamingMessage(
-                request_id=self.request_id,
-                function_load_response=protos.FunctionLoadResponse(
-                    function_id=function_id,
-                    result=protos.StatusResult(
-                        status=protos.StatusResult.Failure,
-                        exception=self._serialize_exception(ex))))
+                ExtensionManager.function_load_extension(
+                    function_name,
+                    func_request.metadata.directory
+                )
+
+                logger.info('Successfully processed FunctionLoadRequest, '
+                            f'request ID: {self.request_id}, '
+                            f'function ID: {function_id},'
+                            f'function Name: {function_name}')
+
+                return protos.StreamingMessage(
+                    request_id=self.request_id,
+                    function_load_response=protos.FunctionLoadResponse(
+                        function_id=function_id,
+                        result=protos.StatusResult(
+                            status=protos.StatusResult.Success)))
+
+            except Exception as ex:
+                return protos.StreamingMessage(
+                    request_id=self.request_id,
+                    function_load_response=protos.FunctionLoadResponse(
+                        function_id=function_id,
+                        result=protos.StatusResult(
+                            status=protos.StatusResult.Failure,
+                            exception=self._serialize_exception(ex))))
+        finally:
+            log = f'$$$ LoadFunction_ms_worker: {1000. * (time.time() - start_time)}'
+            print(log)
 
     async def _handle__invocation_request(self, req):
+        start_time = time.time()
+
+        run_func_log = ""
+        handle_inputs_log = ""
+        handle_outputs_log = ""
+        flush_stdout_log = ""
+
         invoc_request = req.invocation_request
         invocation_id = invoc_request.invocation_id
-        function_id = invoc_request.function_id
-
-        # Set the current `invocation_id` to the current task so
-        # that our logging handler can find it.
-        current_task = _CURRENT_TASK(self._loop)
-        assert isinstance(current_task, ContextEnabledTask)
-        current_task.set_azure_invocation_id(invocation_id)
 
         try:
-            fi: functions.FunctionInfo = self._functions.get_function(
-                function_id)
+            function_id = invoc_request.function_id
 
-            function_invocation_logs: List[str] = [
-                'Received FunctionInvocationRequest',
-                f'request ID: {self.request_id}',
-                f'function ID: {function_id}',
-                f'function name: {fi.name}',
-                f'invocation ID: {invocation_id}',
-                f'function type: {"async" if fi.is_async else "sync"}'
-            ]
-            if not fi.is_async:
-                function_invocation_logs.append(
-                    f'sync threadpool max workers: '
-                    f'{self.get_sync_tp_workers_set()}'
-                )
-            logger.info(', '.join(function_invocation_logs))
+            # Set the current `invocation_id` to the current task so
+            # that our logging handler can find it.
+            current_task = _CURRENT_TASK(self._loop)
+            assert isinstance(current_task, ContextEnabledTask)
+            current_task.set_azure_invocation_id(invocation_id)
 
-            args = {}
-            for pb in invoc_request.input_data:
-                pb_type_info = fi.input_types[pb.name]
-                if bindings.is_trigger_binding(pb_type_info.binding_name):
-                    trigger_metadata = invoc_request.trigger_metadata
+            try:
+                fi: functions.FunctionInfo = self._functions.get_function(
+                    function_id)
+
+                function_invocation_logs: List[str] = [
+                    'Received FunctionInvocationRequest',
+                    f'request ID: {self.request_id}',
+                    f'function ID: {function_id}',
+                    f'function name: {fi.name}',
+                    f'invocation ID: {invocation_id}',
+                    f'function type: {"async" if fi.is_async else "sync"}'
+                ]
+                if not fi.is_async:
+                    function_invocation_logs.append(
+                        f'sync threadpool max workers: '
+                        f'{self.get_sync_tp_workers_set()}'
+                    )
+                logger.info(', '.join(function_invocation_logs))
+
+                handle_inputs_start_time = time.time()
+
+                args = {}
+
+                for pb in invoc_request.input_data:
+                    pb_type_info = fi.input_types[pb.name]
+                    if bindings.is_trigger_binding(pb_type_info.binding_name):
+                        trigger_metadata = invoc_request.trigger_metadata
+                    else:
+                        trigger_metadata = None
+
+                    args[pb.name] = bindings.from_incoming_proto(
+                        pb_type_info.binding_name, pb,
+                        trigger_metadata=trigger_metadata,
+                        pytype=pb_type_info.pytype,
+                        shmem_mgr=self._shmem_mgr)
+
+                fi_context = self._get_context(invoc_request, fi.name, fi.directory)
+                if fi.requires_context:
+                    args['context'] = fi_context
+
+                if fi.output_types:
+                    for name in fi.output_types:
+                        args[name] = bindings.Out()
+
+                handle_inputs_log = f'$$$ HandleInputs_ms_worker: {1000. * (time.time() - handle_inputs_start_time)}, InvocationID: {invocation_id}'
+
+                run_func_start_time = time.time()
+
+                if fi.is_async:
+                    call_result = await self._run_async_func(
+                        fi_context, fi.func, args
+                    )
                 else:
-                    trigger_metadata = None
+                    call_result = await self._loop.run_in_executor(
+                        self._sync_call_tp,
+                        self._run_sync_func,
+                        invocation_id, fi_context, fi.func, args)
 
-                args[pb.name] = bindings.from_incoming_proto(
-                    pb_type_info.binding_name, pb,
-                    trigger_metadata=trigger_metadata,
-                    pytype=pb_type_info.pytype,
-                    shmem_mgr=self._shmem_mgr)
+                run_func_log = f'$$$ RunFunc_ms_worker: {1000. * (time.time() - run_func_start_time)}, InvocationID: {invocation_id}'
 
-            fi_context = self._get_context(invoc_request, fi.name, fi.directory)
-            if fi.requires_context:
-                args['context'] = fi_context
+                handle_outputs_start_time = time.time()
 
-            if fi.output_types:
-                for name in fi.output_types:
-                    args[name] = bindings.Out()
+                if call_result is not None and not fi.has_return:
+                    raise RuntimeError(f'function {fi.name!r} without a $return '
+                                       'binding returned a non-None value')
 
-            if fi.is_async:
-                call_result = await self._run_async_func(
-                    fi_context, fi.func, args
-                )
-            else:
-                call_result = await self._loop.run_in_executor(
-                    self._sync_call_tp,
-                    self._run_sync_func,
-                    invocation_id, fi_context, fi.func, args)
-            if call_result is not None and not fi.has_return:
-                raise RuntimeError(f'function {fi.name!r} without a $return '
-                                   'binding returned a non-None value')
+                output_data = []
+                cache_enabled = self._function_data_cache_enabled
+                if fi.output_types:
+                    for out_name, out_type_info in fi.output_types.items():
+                        val = args[out_name].get()
+                        if val is None:
+                            # TODO: is the "Out" parameter optional?
+                            # Can "None" be marshaled into protos.TypedData?
+                            continue
 
-            output_data = []
-            cache_enabled = self._function_data_cache_enabled
-            if fi.output_types:
-                for out_name, out_type_info in fi.output_types.items():
-                    val = args[out_name].get()
-                    if val is None:
-                        # TODO: is the "Out" parameter optional?
-                        # Can "None" be marshaled into protos.TypedData?
-                        continue
+                        param_binding = bindings.to_outgoing_param_binding(
+                            out_type_info.binding_name, val,
+                            pytype=out_type_info.pytype,
+                            out_name=out_name, shmem_mgr=self._shmem_mgr,
+                            is_function_data_cache_enabled=cache_enabled)
+                        output_data.append(param_binding)
 
-                    param_binding = bindings.to_outgoing_param_binding(
-                        out_type_info.binding_name, val,
-                        pytype=out_type_info.pytype,
-                        out_name=out_name, shmem_mgr=self._shmem_mgr,
-                        is_function_data_cache_enabled=cache_enabled)
-                    output_data.append(param_binding)
+                return_value = None
+                if fi.return_type is not None:
+                    return_value = bindings.to_outgoing_proto(
+                        fi.return_type.binding_name, call_result,
+                        pytype=fi.return_type.pytype)
 
-            return_value = None
-            if fi.return_type is not None:
-                return_value = bindings.to_outgoing_proto(
-                    fi.return_type.binding_name, call_result,
-                    pytype=fi.return_type.pytype)
+                handle_outputs_log = f'$$$ HandleOutputs_ms_worker: {1000. * (time.time() - handle_outputs_start_time)}, InvocationID: {invocation_id}'
+                
+                flush_stdout_start_time = time.time()
 
-            # Actively flush customer print() function to console
+                # Actively flush customer print() function to console
+                sys.stdout.flush()
+
+                flush_stdout_log = f'$$$ FlushStdOut_ms_worker: {1000. * (time.time() - flush_stdout_start_time)}, InvocationID: {invocation_id}'
+
+                return protos.StreamingMessage(
+                    request_id=self.request_id,
+                    invocation_response=protos.InvocationResponse(
+                        invocation_id=invocation_id,
+                        return_value=return_value,
+                        result=protos.StatusResult(
+                            status=protos.StatusResult.Success),
+                        output_data=output_data))
+
+            except Exception as ex:
+                return protos.StreamingMessage(
+                    request_id=self.request_id,
+                    invocation_response=protos.InvocationResponse(
+                        invocation_id=invocation_id,
+                        result=protos.StatusResult(
+                            status=protos.StatusResult.Failure,
+                            exception=self._serialize_exception(ex))))
+        finally:
+            handle_func_log = f'$$$ HandleInvocation_ms_worker: {1000. * (time.time() - start_time)}, InvocationID: {invocation_id}'
+            print(run_func_log)
+            print(handle_func_log)
+            print(handle_inputs_log)
+            print(handle_outputs_log)
+            print(flush_stdout_log)
             sys.stdout.flush()
 
-            return protos.StreamingMessage(
-                request_id=self.request_id,
-                invocation_response=protos.InvocationResponse(
-                    invocation_id=invocation_id,
-                    return_value=return_value,
-                    result=protos.StatusResult(
-                        status=protos.StatusResult.Success),
-                    output_data=output_data))
-
-        except Exception as ex:
-            return protos.StreamingMessage(
-                request_id=self.request_id,
-                invocation_response=protos.InvocationResponse(
-                    invocation_id=invocation_id,
-                    result=protos.StatusResult(
-                        status=protos.StatusResult.Failure,
-                        exception=self._serialize_exception(ex))))
 
     async def _handle__function_environment_reload_request(self, req):
         """Only runs on Linux Consumption placeholder specialization.
@@ -654,9 +704,14 @@ class Dispatcher(metaclass=DispatcherMeta):
             options.append(('grpc.max_send_message_length',
                             self._grpc_max_msg_len))
 
-        channel = grpc.insecure_channel(
-            f'{self._host}:{self._port}', options)
-
+        platform = sys.platform
+        if platform == "linux" or platform == "linux2":
+            address = f'unix://{tempfile.gettempdir()}/socket.tmp'
+            print(f'Connected to gRPC on: {address}')
+            channel = grpc.insecure_channel(address, options)
+        else:
+            channel = grpc.insecure_channel(
+                f'{self._host}:{self._port}', options)
         try:
             grpc.channel_ready_future(channel).result(
                 timeout=self._grpc_connect_timeout)
