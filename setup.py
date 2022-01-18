@@ -19,7 +19,7 @@ from setuptools.command import develop
 from azure_functions_worker import __version__
 
 # The GitHub repository of the Azure Functions Host
-WEBHOST_GITHUB_API = "https://api.github.com/repos/Azure/azure-functions-host"
+WEBHOST_GITHUB_API = "https://api.github.com/repos/tonybaloney/azure-functions-host"
 WEBHOST_TAG_PREFIX = "v3."
 
 # Extensions necessary for non-core bindings.
@@ -252,7 +252,7 @@ class webhost(distutils.cmd.Command):
         # Return the path of the downloaded host
         temporary_file = tempfile.NamedTemporaryFile()
         zip_url = (
-            'https://github.com/Azure/azure-functions-host/archive/'
+            'https://github.com/tonybaloney/azure-functions-host/archive/'
             f'v{version}.zip'
         )
         print(f'Downloading Functions Host ({version}) from {zip_url}')
