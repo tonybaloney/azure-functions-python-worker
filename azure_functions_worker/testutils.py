@@ -998,7 +998,7 @@ def _main():
         host.wait()
     finally:
         host.terminate()
-        _teardown_func_app()
+        _teardown_func_app(app_root)
 
 
 if __name__ == '__main__':
