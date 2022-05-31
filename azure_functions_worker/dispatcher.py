@@ -12,11 +12,12 @@ import os
 import queue
 import sys
 import threading
-from asyncio import BaseEventLoop
+from asyncio import BaseEventLoop, Task
 from logging import LogRecord
 from typing import List, Optional
 
 import grpc
+import grpc.aio
 
 from . import bindings, constants, functions, loader, protos
 from .bindings.shared_memory_data_transfer import SharedMemoryManager
@@ -88,10 +89,9 @@ class Dispatcher(metaclass=DispatcherMeta):
         self._grpc_connect_timeout: float = grpc_connect_timeout
         # This is set to -1 by default to remove the limitation on msg size
         self._grpc_max_msg_len: int = grpc_max_msg_len
-        self._grpc_resp_queue: queue.Queue = queue.Queue()
+        self._grpc_resp_queue: asyncio.Queue = asyncio.Queue()
         self._grpc_connected_fut = loop.create_future()
-        self._grpc_thread: threading.Thread = threading.Thread(
-            name='grpc-thread', target=self.__poll_grpc)
+        self._grpc_task: Optional[Task] = None
 
     def get_sync_tp_workers_set(self):
         """We don't know the exact value of the threadcount set for the Python
@@ -107,7 +107,7 @@ class Dispatcher(metaclass=DispatcherMeta):
                       request_id: str, connect_timeout: float):
         loop = asyncio.events.get_event_loop()
         disp = cls(loop, host, port, worker_id, request_id, connect_timeout)
-        disp._grpc_thread.start()
+        disp._grpc_task = loop.create_task(disp.__poll_grpc(), name='grpc-task')
         await disp._grpc_connected_fut
         logger.info('Successfully opened gRPC channel to %s:%s ', host, port)
         return disp
@@ -169,10 +169,10 @@ class Dispatcher(metaclass=DispatcherMeta):
             self.stop()
 
     def stop(self) -> None:
-        if self._grpc_thread is not None:
+        if self._grpc_task is not None:
             self._grpc_resp_queue.put_nowait(self._GRPC_STOP_RESPONSE)
-            self._grpc_thread.join()
-            self._grpc_thread = None
+            self._grpc_task.done()
+            self._grpc_task = None
 
         self._stop_sync_call_tp()
 
@@ -240,20 +240,6 @@ class Dispatcher(metaclass=DispatcherMeta):
             stack_trace = ''
 
         return protos.RpcException(message=message, stack_trace=stack_trace)
-
-    async def _dispatch_grpc_request(self, request):
-        content_type = request.WhichOneof('content')
-        request_handler = getattr(self, f'_handle__{content_type}', None)
-        if request_handler is None:
-            # Don't crash on unknown messages.  Some of them can be ignored;
-            # and if something goes really wrong the host can always just
-            # kill the worker's process.
-            logger.error(f'unknown StreamingMessage content type '
-                         f'{content_type}')
-            return
-
-        resp = await request_handler(request)
-        self._grpc_resp_queue.put_nowait(resp)
 
     async def _handle__worker_init_request(self, request):
         logger.info('Received WorkerInitRequest, '
@@ -704,7 +690,7 @@ class Dispatcher(metaclass=DispatcherMeta):
             context, func, params
         )
 
-    def __poll_grpc(self):
+    async def __poll_grpc(self):
         options = []
         if self._grpc_max_msg_len:
             options.append(('grpc.max_receive_message_length',
@@ -712,41 +698,54 @@ class Dispatcher(metaclass=DispatcherMeta):
             options.append(('grpc.max_send_message_length',
                             self._grpc_max_msg_len))
 
-        channel = grpc.insecure_channel(
-            f'{self._host}:{self._port}', options)
+        async with grpc.aio.insecure_channel(f'{self._host}:{self._port}', options) as channel:
+            try:
+                error_logger.debug("Waiting for channel to become ready..")
+                await channel.channel_ready()
+                error_logger.info("channel ready")
 
-        try:
-            grpc.channel_ready_future(channel).result(
-                timeout=self._grpc_connect_timeout)
-        except Exception as ex:
-            self._loop.call_soon_threadsafe(
-                self._grpc_connected_fut.set_exception, ex)
-            return
-        else:
-            self._loop.call_soon_threadsafe(
-                self._grpc_connected_fut.set_result, True)
-
-        stub = protos.FunctionRpcStub(channel)
-
-        def gen(resp_queue):
-            while True:
-                msg = resp_queue.get()
-                if msg is self._GRPC_STOP_RESPONSE:
-                    grpc_req_stream.cancel()
-                    return
-                yield msg
-
-        grpc_req_stream = stub.EventStream(gen(self._grpc_resp_queue))
-        try:
-            for req in grpc_req_stream:
+                # timeout=self._grpc_connect_timeout
+            except Exception as ex:
                 self._loop.call_soon_threadsafe(
-                    self._loop.create_task, self._dispatch_grpc_request(req))
-        except Exception as ex:
-            if ex is grpc_req_stream:
-                # Yes, this is how grpc_req_stream iterator exits.
+                    self._grpc_connected_fut.set_exception, ex)
                 return
-            error_logger.exception('unhandled error in gRPC thread')
-            raise
+            else:
+                self._loop.call_soon_threadsafe(
+                    self._grpc_connected_fut.set_result, True)
+
+            stub = protos.FunctionRpcStub(channel)
+
+            async def async_request_iterator(resp_queue: asyncio.Queue):
+                while True:
+                    msg = await resp_queue.get()
+                    if msg is self._GRPC_STOP_RESPONSE:
+                        grpc_req_stream.cancel()
+                        return
+                    yield msg
+
+            grpc_req_stream = stub.EventStream(async_request_iterator(self._grpc_resp_queue))
+
+            try:
+                async for request in grpc_req_stream:
+                    content_type = request.WhichOneof('content')
+                    request_handler = getattr(self, f'_handle__{content_type}', None)
+                    if request_handler:
+                        task = self._loop.create_task(request_handler(request))
+                        resp = await task
+                        self._grpc_resp_queue.put_nowait(resp)
+                    else:
+                        # Don't crash on unknown messages.  Some of them can be ignored;
+                        # and if something goes really wrong the host can always just
+                        # kill the worker's process.
+                        logger.error(f'unknown StreamingMessage content type '
+                                    f'{content_type}')
+
+            except Exception as ex:
+                if ex is grpc_req_stream:
+                    # Yes, this is how grpc_req_stream iterator exits.
+                    return
+                error_logger.exception('unhandled error in gRPC thread')
+                raise
 
 
 class AsyncLoggingHandler(logging.Handler):
