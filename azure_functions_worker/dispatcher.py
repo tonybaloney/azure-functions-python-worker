@@ -89,7 +89,7 @@ class Dispatcher(metaclass=DispatcherMeta):
         self._grpc_connect_timeout: float = grpc_connect_timeout
         # This is set to -1 by default to remove the limitation on msg size
         self._grpc_max_msg_len: int = grpc_max_msg_len
-        self._grpc_resp_queue: asyncio.Queue = asyncio.Queue()
+        self._grpc_resp_queue: asyncio.Queue = asyncio.Queue(loop=loop)
         self._grpc_connected_fut = loop.create_future()
         self._grpc_task: Optional[Task] = None
 
