@@ -1,6 +1,7 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
 
+from functools import cached_property
 from typing import Any, Optional
 import json
 from .. import protos
@@ -12,7 +13,7 @@ class Datum:
         self.value = value
         self.type = type
 
-    @property
+    @cached_property
     def python_value(self) -> Any:
         if self.value is None or self.type is None:
             return None
@@ -31,7 +32,7 @@ class Datum:
         else:
             return self.value
 
-    @property
+    @cached_property
     def python_type(self) -> type:
         return type(self.python_value)
 

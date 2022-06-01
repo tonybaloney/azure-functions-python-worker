@@ -1,5 +1,6 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
+from functools import lru_cache
 import sys
 import typing
 
@@ -24,6 +25,7 @@ def get_binding_registry():
     return func.get_binding_registry()
 
 
+@lru_cache(maxsize=100)
 def get_binding(bind_name: str) -> object:
     binding = None
     registry = get_binding_registry()
